@@ -1,0 +1,149 @@
+---
+title: "Prediction"
+author: "Ye Bi"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_knit$set(root.dir = "/Users/yebi/Library/CloudStorage/OneDrive-VirginiaTech/Research/Codes/research/BCS/BodyWeight/Rcodes")
+```
+
+## Loading packages ----
+```{r}
+library(readxl)
+library(tidyverse)
+library(reshape2)
+library(MLmetrics)
+```
+
+## Read in image_analysis and real body weight list.
+```{r}
+load("./outputs/bw_img.L.RData")
+```
+
+## CV1: Forcasting CV 
+- Building function
+- 90:10
+- 80:20
+- 70:30
+- 60:40
+- 50:50
+```{r}
+data.df = do.call(rbind, bw_img.L)
+data.df$day = as.numeric(gsub("D", "", data.df$DAY))
+data.df$FullID = paste0(data.df$DAY,"_", data.df$FullID)
+rownames(data.df) = data.df$FullID
+```
+
+
+```{r}
+# library(ie2misc)
+
+cv1_func <- function(ntrn){
+            # ntrn = 22
+            train.df = data.df %>% filter(day <= ntrn) %>% droplevels()
+            test.df = data.df %>% filter(day > ntrn) %>% droplevels()
+            
+            # table(test.df$day)
+            # table(train.df$day)
+            
+            formu = paste("BW~1+", paste(colnames(train.df)[6:10], collapse = "+"), sep = "")
+            fit1 <- lm(formu, data = train.df)
+            
+            pred1 <- predict(fit1, test.df)
+            corr = cor(pred1, test.df$BW, use="complete.obs")
+            mse = mean((pred1 - test.df$BW)^2, na.rm = T)
+
+            mape = NA
+            
+            predr = c(corr, mse, mape)
+            names(predr) = c("corr", "MSE", "mape")
+            return(predr)
+}
+# table(names(pred1) == test.df$FullID)
+
+
+
+predr = matrix(NA, nrow = 5, ncol = 3);rownames(predr) = c("cv90", "cv80", "cv70", "cv60", "cv50"); colnames(predr) = c("corr", "MSE", "mape")
+predr[1,] = cv1_func(ntrn = round(28*0.9))
+predr[2,] = cv1_func(ntrn = round(28*0.8))
+predr[3,] = cv1_func(ntrn = round(28*0.7))
+predr[4,] = cv1_func(ntrn = round(28*0.6))
+predr[5,] = cv1_func(ntrn = round(28*0.5))
+predr
+```
+
+## CV2: Leave several cows out CV
+- 1 cow
+- 2 cows
+- 3 cows
+```{r}
+#leave one cow out
+ntst = 1
+ntrn = 12-ntst
+test.ix = combn(12, ntst)
+cow_id = unique(data.df$ID)
+predr = list()
+for(i in test.ix){
+            test.df = data.df %>% filter(ID == cow_id[i]) %>% droplevels()
+            train.df = data.df %>% filter(ID != cow_id[i]) %>% droplevels()
+  
+            formu = paste("BW~1+", paste(colnames(train.df)[6:10], collapse = "+"), sep = "")
+            fit1 <- lm(formu, data = train.df)
+            
+            pred1 <- predict(fit1, test.df)
+            corr = cor(pred1, test.df$BW, use="complete.obs")
+            mse = mean((pred1 - test.df$BW)^2, na.rm = T)
+
+            mape = NA
+            
+            predr1[[i]] = round(c(corr, mse, mape), 2)
+            names(predr1[[i]]) = c("corr", "MSE", "mape")
+      
+}
+do.call(rbind, predr1)
+colMeans(do.call(rbind, predr1))
+```
+
+```{r}
+lc_func <- function(ntst){
+ntrn = 12-ntst
+test.ix = combn(12, ntst)
+cow_id = unique(data.df$ID)
+predr2 = list()
+for(i in 1:ncol(test.ix)){
+  
+            test.df = data.df %>% filter(ID %in% cow_id[c(test.ix[,i])]) %>% droplevels()
+            train.df = data.df %>% filter(!(ID %in% cow_id[c(test.ix[,i])])) %>% droplevels()
+
+            formu = paste("BW~1+", paste(colnames(train.df)[6:10], collapse = "+"), sep = "")
+            fit1 <- lm(formu, data = train.df)
+
+            pred1 <- predict(fit1, test.df)
+            corr = cor(pred1, test.df$BW, use="complete.obs")
+            mse = mean((pred1 - test.df$BW)^2, na.rm = T)
+
+            mape = NA
+
+            predr2[[i]] = round(c(corr, mse, mape), 2)
+            names(predr2[[i]]) = c("corr", "MSE", "mape")
+  }
+      return(predr2)
+}
+```
+
+```{r}
+predr1 = lc_func(1)
+round(colMeans(do.call(rbind, predr1)),2)
+
+predr2 = lc_func(2)
+round(colMeans(do.call(rbind, predr2)),2)
+
+predr3 = lc_func(3)
+round(colMeans(do.call(rbind, predr3)),2)
+```
+
+
+

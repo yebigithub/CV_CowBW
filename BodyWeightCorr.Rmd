@@ -1,0 +1,368 @@
+---
+title: "BodyWeightCorr"
+author: "Ye Bi"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_knit$set(root.dir = "/Users/yebi/Library/CloudStorage/OneDrive-VirginiaTech/Research/Codes/research/BCS/BodyWeight/Rcodes")
+```
+
+## Loading packages ----
+```{r}
+library(readxl)
+library(tidyverse)
+library(reshape2)
+```
+
+## Read in real_bw and img restuls
+- real_bw0: Holstein
+- real_bw1: Jersey
+```{r}
+real_bw0 <- read_excel("~/Library/CloudStorage/OneDrive-VirginiaTech/Research/Codes/research/BCS/BodyWeight/BWData/C065_BWData_Full.xlsx", sheet="HOLSTEIN_CHAIN_COWS")
+real_bw0 <- real_bw0[,-grep("AVG", colnames(real_bw0))]
+real_bw0 = real_bw0[,-c(1:2)]
+real_bw0[real_bw0 == "N/A"] <- NA
+real_bw0$DAY <- factor(real_bw0$DAY, levels = unique(real_bw0$DAY))
+
+real_bw1 <- read_excel("~/Library/CloudStorage/OneDrive-VirginiaTech/Research/Codes/research/BCS/BodyWeight/BWData/C065_BWData_Full.xlsx", sheet = "JERSEY_CHAIN_COWS")
+real_bw1$DAY <- factor(real_bw1$DAY, levels = unique(real_bw1$DAY))
+real_bw1 = real_bw1[,-c(1,3,6)]
+real_bw1[real_bw1 == "N/A"] = NA
+
+real_bw = merge(real_bw0, real_bw1, by="DAY", all = T)
+# real_bw = real_bw1
+
+# colnames(real_bw)[-c(1:3)] = gsub("_", "", colnames(real_bw)[-c(1:3)])
+path_output_img = "../BWData"
+
+```
+```{r}
+# colnames(real_bw) = gsub("_PM", "PM", gsub("_AM", "AM", colnames(real_bw)))
+# write.csv(real_bw, file=file.path(path_output_img, "BodyWeight_cleaned.csv"), row.names = F, quote = F)
+```
+
+### Preprocess img dataframe.
+```{r}
+allL = list()
+for (i in 1:28){
+  # i = 1
+  # j = 1
+  path_output = paste0(path_output_img, "/D", i)
+  # print(path_output)
+  cowid <- list.files(path = path_output, pattern = ".csv")
+  cowid0 <- gsub("AM", "_AM", cowid)
+  cowid0 <- gsub("PM", "_PM", cowid0)
+  
+ 
+  summ = as.data.frame(matrix(NA, nrow = length(cowid0), ncol = 9))
+  colnames(summ) = c("DAY", "Time", "ID","FullID", "Width", "Length", "Height_Centroid", "Height_average", "Volume")
+
+  for(j in 1:length(cowid)){
+      # D = paste0("D",i, "_")
+      data_df = read.csv(file=file.path(paste0(path_output, "/", cowid[j])))
+      summ[j,5:9] = apply(data_df[,-c(1:3)], 2, median)
+      
+      info.str = unlist(strsplit(gsub(".csv", "", cowid0[j]), "_"))
+      
+      summ[j,"ID"] = info.str[2]
+      summ[j,"Time"] = info.str[3]
+      summ[j, "DAY"] = info.str[1]
+      summ[j, "FullID"] = paste0(info.str[2], "_", info.str[3])
+  }
+  allL[[i]] = summ
+}
+
+names(allL) = paste0("Day", 1:28) #some NA in allL because the cow doesn't pass the QC.
+```
+
+
+### combine bw and img together into one list
+```{r}
+bw_img.L <- list() 
+for (i in 1:28){
+  img_result = allL[[i]]
+  real_bw_day = real_bw %>% filter(DAY == i)
+  img_match = as.data.frame(img_result[img_result$FullID %in% colnames(real_bw_day), ])
+  real_bw_match = real_bw_day[, colnames(real_bw_day) %in% img_result$FullID]
+  bw = data.frame(FullID = colnames(real_bw_match), BW = as.numeric(real_bw_match[1,]))
+  pars.df = as.data.frame(merge(bw, img_match, by="FullID"))
+  bw_img.L[[i]] = pars.df
+}
+names(bw_img.L) = paste0("D", 1:28)
+save(bw_img.L, file = "./outputs/bw_img.L.RData")
+```
+
+## Calculate corr per day ----
+```{r}
+bwimg.df = do.call(rbind, bw_img.L)
+table(bwimg.df$Time)
+
+bwimg.df$DAY <- factor(bwimg.df$DAY, levels = paste0("D", 1:28))
+bwimg.df <- bwimg.df %>% mutate(across(c(Time, ID, FullID), as.factor))
+bwimg.df <- na.omit(bwimg.df)
+dim(bwimg.df) #465*9
+
+perday.L = bwimg.df %>% group_split(DAY)
+names(perday.L) = levels(bwimg.df$DAY)
+
+
+corr_perday = matrix(NA, 28, 5); colnames(corr_perday) = c("Width", "Length","Height_centroid", "Height_average", "Volume")
+for (i in 1:28){
+  # i = 1
+  perday = as.data.frame(perday.L[[i]])
+  corr_perday[i,1] = cor(as.numeric(perday[, "BW"]), as.numeric(perday[, "Width"]), use="complete.obs") #Width
+  corr_perday[i,2] = cor(as.numeric(perday[, "BW"]), as.numeric(perday[, "Length"]), use="complete.obs") #length
+  corr_perday[i,3] = cor(as.numeric(perday[, "BW"]), as.numeric(perday[, "Height_Centroid"]), use="complete.obs") #height_centroid
+  corr_perday[i,4] = cor(as.numeric(perday[, "BW"]), as.numeric(perday[, "Height_average"]), use="complete.obs") #height_average
+  corr_perday[i,5] = cor(as.numeric(perday[, "BW"]), as.numeric(perday[, "Volume"]), use="complete.obs") #volume
+
+}
+
+c1 = reshape2::melt(corr_perday); colnames(c1) = c("Day", "Pars", "corr")
+c1$Pars = factor(c1$Pars, levels = c("Volume", "Height_average", "Height_centroid", "Width", "Length"))
+# library(pheatmap)
+# pheatmap(t(corr_perday))
+p1 = ggplot(c1, aes(x = Day, y = Pars, fill=corr)) +
+  geom_tile(colour="white") + 
+  # coord_fixed() +
+   # scale_fill_gradient(low = "white",high = "deepskyblue", limits = c(-1,1))+
+  # scale_fill_viridis_c(alpha = 0.95,  direction = -1)+
+    scale_fill_viridis_c(alpha = 0.95, limits = c(0.3, 1), direction = -1)+
+  # scale_fill_distiller(palette = "RdYlGn", limits = c(-1, 1), direction = -1) +
+  # scale_fill_gradient(low="white", high="red") +
+  scale_x_continuous(limits = c(0,29), breaks = 1:28) +
+  ggtitle("(A) Corr per day") + 
+  ylab("Parameters")+
+  xlab("Days")+
+  theme_bw() +
+  theme(plot.title = element_text(size=18, face = "bold", hjust = 0), 
+        axis.title.x = element_text(size = 16),
+        axis.title.y = element_text(size = 16),
+        axis.text.x = element_text(size = 12, angle = 0,hjust=0.5,vjust=0.2), 
+        axis.text.y = element_text(size = 12))
+print(p1)
+dev.print(pdf, file="./heatmap_perDay.pdf", height = 10, width = 15)
+```
+
+## Calculate corr per day AM PM ----
+```{r}
+bwimg.df = do.call(rbind, bw_img.L)
+table(bwimg.df$Time)
+
+bwimg.am <- bwimg.df %>% filter(Time == "AM")
+bwimg.pm <- bwimg.df %>% filter(Time == "PM")
+
+
+########fuc################
+
+day_time_func <- function(bwimg.df, title){
+
+                  # bwimg.df = bwimg.am
+                  bwimg.df$DAY <- factor(bwimg.df$DAY, levels = paste0("D", 1:28))
+                  
+                  bwimg.df <- na.omit(bwimg.df)
+                  dim(bwimg.df) #465*9
+                  
+                  sub.L = bwimg.df %>% group_split(DAY)
+                  names(sub.L) = unique(bwimg.df$DAY)
+                  
+                  cor = matrix(NA, length(sub.L), 5); colnames(cor) = c("Width", "Length","Height_centroid", "Height_average", "Volume")
+                  # rownames(cor) = unique(bwimg.df$DAY)
+                  for (i in 1:length(sub.L)){
+                    # i = 1
+                    sub = as.data.frame(sub.L[[i]])
+                    cor[i,1] = cor(as.numeric(sub[, "BW"]), as.numeric(sub[, "Width"]), use="complete.obs") #Width
+                    cor[i,2] = cor(as.numeric(sub[, "BW"]), as.numeric(sub[, "Length"]), use="complete.obs") #length
+                    cor[i,3] = cor(as.numeric(sub[, "BW"]), as.numeric(sub[, "Height_Centroid"]), use="complete.obs") #height_centroid
+                    cor[i,4] = cor(as.numeric(sub[, "BW"]), as.numeric(sub[, "Height_average"]), use="complete.obs") #height_average
+                    cor[i,5] = cor(as.numeric(sub[, "BW"]), as.numeric(sub[, "Volume"]), use="complete.obs") #volume
+                    
+                  }
+                  
+                  c1 = reshape2::melt(cor); colnames(c1) = c("Day", "Pars", "corr")
+                  c1$Pars = factor(c1$Pars, levels = c("Volume", "Height_average", "Height_centroid", "Width", "Length"))
+                  
+                  p1 = ggplot(c1, aes(x = Day, y = Pars, fill=corr)) +
+                    geom_tile(colour="white") + 
+                    # coord_fixed() +
+                    # scale_fill_viridis_c(alpha = 0.95,  direction = -1)+
+                    scale_fill_viridis_c(alpha = 0.95, limits = c(0.3, 1), direction = -1)+
+                    # scale_fill_distiller(palette = "YlGn", limits = c(0.33,1.1), direction = 1) +
+                    # scale_fill_gradient(low="white", high="red") +
+                    scale_x_continuous(limits = c(0,length(sub.L)+1), breaks = 1:length(sub.L)) +
+                    ggtitle(title) + 
+                    ylab("Parameters")+
+                    xlab("Days")+
+                    theme_bw() +
+                    theme(plot.title = element_text(size=18, face = "bold", hjust = 0), 
+                          axis.title.x = element_text(size = 16),
+                          axis.title.y = element_text(size = 16),
+                          axis.text.x = element_text(size = 12, angle = 0,hjust=0.5,vjust=0.2), 
+                          axis.text.y = element_text(size = 12))
+                  return(p1)
+
+}
+
+title = "(A1) Corr per day (AM)"
+pp = day_time_func(bwimg.am, title)
+print(pp)
+dev.print(pdf, file="./heatmap_perDayAM.pdf", height = 10, width = 15)
+title = "(A2) Corr per day (PM)"
+pp1 = day_time_func(bwimg.pm, title)
+print(pp1)
+dev.print(pdf, file="./heatmap_perDayPM.pdf", height = 10, width = 15)
+```
+
+## Calculate corr per cow ----
+```{r}
+bwimg.df = do.call(rbind, bw_img.L)
+table(bwimg.df$Time)
+
+bwimg.df$DAY <- factor(bwimg.df$DAY, levels = paste0("D", 1:28))
+bwimg.df <- bwimg.df %>% mutate(across(c(Time, ID, FullID), as.factor))
+bwimg.df <- na.omit(bwimg.df)
+dim(bwimg.df) #465*9
+
+percow.L = bwimg.df %>% group_split(ID)
+names(percow.L) = levels(bwimg.df$ID)
+
+corr_percow = matrix(NA, length(percow.L), 5); colnames(corr_percow) = c("Width", "Length","Height_centroid", "Height_average", "Volume")
+# rownames(corr_percow) = names(percow.L)
+m = 1
+for(i in 1:length(percow.L)){
+  # i = 1
+  percow = as.data.frame(percow.L[[i]])
+  corr_percow[i,1] = cor(as.numeric(percow[, "BW"]), as.numeric(percow[, "Width"]), use="complete.obs") #Width
+  corr_percow[i,2] = cor(as.numeric(percow[, "BW"]), as.numeric(percow[, "Length"]), use="complete.obs") #length
+  corr_percow[i,3] = cor(as.numeric(percow[, "BW"]), as.numeric(percow[, "Height_Centroid"]), use="complete.obs") #height_centroid
+  corr_percow[i,4] = cor(as.numeric(percow[, "BW"]), as.numeric(percow[, "Height_average"]), use="complete.obs") #height_average
+  corr_percow[i,5] = cor(as.numeric(percow[, "BW"]), as.numeric(percow[, "Volume"]), use="complete.obs") #volume
+
+}
+c2 = reshape2::melt(corr_percow); colnames(c2) = c("Cow", "Pars", "corr")
+c2$Pars = factor(c2$Pars, levels = c("Volume", "Height_average", "Height_centroid", "Width", "Length"))
+c2$Cow = factor(c2$Cow, levels = unique(c2$Cow))
+p2 = ggplot(c2, aes(x = Cow, y = Pars, fill=corr)) +
+  geom_tile(colour="white") + 
+  # coord_fixed() +
+  # scale_fill_viridis_c(alpha = 0.95, limits = c(-1, 1), direction = -1)+
+    scale_fill_viridis_c(alpha = 0.95,  direction = -1)+
+  # scale_fill_distiller(palette = "YlGn", limits = c(0.33,1.1), direction = 1) +
+  # scale_fill_gradient(low="white", high="red") +
+  # scale_x_continuous(limits = c(0,29), breaks = 1:28) +
+  ggtitle("(B) Corr per cow") + 
+  ylab("Parameters")+
+  xlab("Cows")+
+  theme_bw() +
+  theme(plot.title = element_text(size=18, face = "bold", hjust = 0), 
+        axis.title.x = element_text(size = 16),
+        axis.title.y = element_text(size = 16),
+        axis.text.x = element_text(size = 12, angle = 0,hjust=0.5,vjust=0.2), 
+        axis.text.y = element_text(size = 12))
+print(p2)
+dev.print(pdf, file="./heatmap_perCow.pdf", height = 10, width = 15)
+```
+
+## Calculate corr per cow AM PM----
+```{r}
+bwimg.df = do.call(rbind, bw_img.L)
+table(bwimg.df$Time)
+
+bwimg.am <- bwimg.df %>% filter(Time == "AM")
+bwimg.pm <- bwimg.df %>% filter(Time == "PM")
+
+##funcccccccc#################
+
+cow_time_func <- function(bwimg.df, title){
+                  # bwimg.df = bwimg.am
+                  bwimg.df <- na.omit(bwimg.df)
+                  dim(bwimg.df) #228*10
+                  
+                  sub.L = bwimg.df %>% group_split(ID)
+                  names(sub.L) = unique(bwimg.df$ID)
+                  
+                  cor = matrix(NA, length(sub.L), 5); colnames(cor) = c("Width", "Length","Height_centroid", "Height_average", "Volume")
+                  rownames(cor) = unique(bwimg.df$ID)
+                  for(i in 1:length(sub.L)){
+                    # i = 1
+                    per = sub.L[[i]]
+                    cor[i, 1] = cor(as.numeric(per$BW), as.numeric(per$Width))
+                    cor[i, 2] = cor(as.numeric(per$BW), as.numeric(per$Length))
+                    cor[i, 3] = cor(as.numeric(per$BW), as.numeric(per$Height_Centroid))
+                    cor[i, 4] = cor(as.numeric(per$BW), as.numeric(per$Height_average))
+                    cor[i, 5] = cor(as.numeric(per$BW), as.numeric(per$Volume))
+                  }
+                  cor = na.omit(cor)
+                  c0 = reshape2::melt(cor); colnames(c0) = c("Cow", "Pars", "corr")
+                  c0$Pars = factor(c0$Pars, levels = c("Volume", "Height_average", "Height_centroid", "Width", "Length"))
+                  c0$Cow = factor(c0$Cow, levels = unique(c0$Cow))
+                  p0 = ggplot(c0, aes(x = Cow, y = Pars, fill=corr)) +
+                    geom_tile(colour="white") + 
+                    # coord_fixed() +
+                    # scale_fill_viridis_c(alpha = 0.95, limits = c(-1, 1), direction = -1)+
+                      scale_fill_viridis_c(alpha = 0.95,  direction = -1)+
+                    # scale_fill_distiller(palette = "YlGn", limits = c(0.33,1.1), direction = 1) +
+                    # scale_fill_gradient(low="white", high="red") +
+                    # scale_x_continuous(limits = c(0,29), breaks = 1:28) +
+                    ggtitle(title) + 
+                    ylab("Parameters")+
+                    xlab("Cows")+
+                    theme_bw() +
+                    theme(plot.title = element_text(size=18, face = "bold", hjust = 0), 
+                          axis.title.x = element_text(size = 16),
+                          axis.title.y = element_text(size = 16),
+                          axis.text.x = element_text(size = 12, angle = 0,hjust=0.5,vjust=0.2), 
+                          axis.text.y = element_text(size = 12))
+                  return(p0)
+}
+
+
+title = "(B1) Corr per cow (AM)"
+pp = cow_time_func(bwimg.am, title)
+print(pp)
+dev.print(pdf, file="./heatmap_perCowAM.pdf", height = 10, width = 15)
+
+title = "(B2) Corr per cow (PM)"
+pp1 = cow_time_func(bwimg.pm, title)
+print(pp1)
+dev.print(pdf, file="./heatmap_perCowPM.pdf", height = 10, width = 15)
+
+```
+
+## All
+```{r}
+bwimg.df = do.call(rbind, bw_img.L)
+bwimg.df <- na.omit(bwimg.df)
+temp = bwimg.df[,-c(1,3,4,5)]
+cor = cor(temp)
+cor = na.omit(cor)
+                  c0 = reshape2::melt(cor)
+                  c0 = c0%>%arrange(Var1) %>% group_by(Var1) %>% filter(row_number() <= which(Var1 == Var2)) 
+                 # c0$Var1 = factor(c0$Var1, levels = c("Volume", "Height_average", "Height_centroid", "Width", "Length", "BW"))
+                 # c0$Var2 = factor(c0$Var2, levels = c("Volume", "Height_average", "Height_centroid", "Width", "Length", "BW"))
+                  # c0$Cow = factor(c0$Cow, levels = unique(c0$Cow))
+                  p0 = ggplot(c0, aes(x = Var1, y = Var2)) +
+                    geom_tile(aes(fill=value), colour="white") + 
+                    geom_text(aes(label = round(value, 2)), size = 20 / .pt, colour = "white") +
+                    # coord_fixed() +
+                    # scale_fill_viridis_c(alpha = 0.95, limits = c(0.3, 1), direction = -1)+
+                      scale_fill_viridis_c(alpha = 0.95,  direction = -1)+
+                    # scale_fill_distiller(palette = "YlGn", limits = c(0.33,1.1), direction = 1) +
+                    # scale_fill_gradient(low="white", high="red") +
+                    # scale_x_continuous(limits = c(0,29), breaks = 1:28) +
+                    ggtitle("All Corr") + 
+                    ylab("Parameters")+
+                    xlab("Parameters")+
+                    theme_bw() +
+                    theme(plot.title = element_text(size=30, face = "bold", hjust = 0), 
+                          axis.title.x = element_text(size = 16),
+                          axis.title.y = element_text(size = 16),
+                          axis.text.x = element_text(size = 20, angle = 0,hjust=0.5,vjust=0.2), 
+                          axis.text.y = element_text(size = 20))
+                  print(p0)
+                  # dev.print(pdf, file="./heatmap_all.pdf", height = 11, width = 16)
+```
+
