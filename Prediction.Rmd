@@ -16,11 +16,17 @@ library(readxl)
 library(tidyverse)
 library(reshape2)
 library(MLmetrics)
+library(caret)
 ```
 
 ## Read in image_analysis and real body weight list.
 ```{r}
 load("./outputs/bw_img.L.RData")
+```
+
+```{r}
+train_control = trainControl(method="cv", number = 5, savePredictions = TRUE, classProbs = F)
+train_control0 = trainControl(method="none", savePredictions = TRUE, classProbs = F)
 ```
 
 ## CV1: Forcasting CV 
@@ -35,115 +41,183 @@ data.df = do.call(rbind, bw_img.L)
 data.df$day = as.numeric(gsub("D", "", data.df$DAY))
 data.df$FullID = paste0(data.df$DAY,"_", data.df$FullID)
 rownames(data.df) = data.df$FullID
+clean = data.df[!data.df$BW<200, ]
+clean1 = na.omit(clean)
+data.df = clean1
+# write.csv(clean1, "./outputs/bw_img_df_clean.csv", row.names = F, quote = F)
 ```
 
-
+### Build function for cv1
 ```{r}
 # library(ie2misc)
 
 cv1_func <- function(ntrn){
-            # ntrn = 22
             train.df = data.df %>% filter(day <= ntrn) %>% droplevels()
             test.df = data.df %>% filter(day > ntrn) %>% droplevels()
             
             # table(test.df$day)
             # table(train.df$day)
             
-            formu = paste("BW~1+", paste(colnames(train.df)[6:10], collapse = "+"), sep = "")
-            fit1 <- lm(formu, data = train.df)
-            
-            pred1 <- predict(fit1, test.df)
-            corr = cor(pred1, test.df$BW, use="complete.obs")
-            mse = mean((pred1 - test.df$BW)^2, na.rm = T)
 
-            mape = NA
+            ##RF#####################
+            rf11 <- caret::train(BW~. , 
+                                 data=train.df[,c(2,6:10)], 
+                                 method="rf", 
+                                 trControl=train_control0,
+                                 tuneGrid = expand.grid(mtry=3))
+                  
+            pred1 = predict(rf11, test.df[,c(2,6:10)])
+            corr1 = cor(pred1, test.df$BW, use="complete.obs")
+            mse1 = mean((pred1 - test.df$BW)^2, na.rm = T)
+            mape1 = MLmetrics::MAPE(pred1, test.df$BW)*100
+            predr1 = c(corr1, mse1, mape1)
+            names(predr1) = c("corr", "MSE", "MAPE")
             
-            predr = c(corr, mse, mape)
-            names(predr) = c("corr", "MSE", "mape")
+            ##OLS##############
+            formu = paste("BW~1+", paste(colnames(train.df)[c(6,7,9,10)], collapse = "+"), sep = "")
+            fit1 <- lm(formu, data = train.df)
+            pred2 <- predict(fit1, test.df)
+            corr2 = cor(pred2, test.df$BW, use="complete.obs")
+            mse2 = mean((pred2 - test.df$BW)^2, na.rm = T)
+            mape2 = MLmetrics::MAPE(pred2, test.df$BW)*100
+            predr2 = c(corr2, mse2, mape2)
+
+            predr = cbind(predr1, predr2)
             return(predr)
 }
 # table(names(pred1) == test.df$FullID)
 
 
 
-predr = matrix(NA, nrow = 5, ncol = 3);rownames(predr) = c("cv90", "cv80", "cv70", "cv60", "cv50"); colnames(predr) = c("corr", "MSE", "mape")
+predr = matrix(NA, nrow = 5, ncol = 6);rownames(predr) = c("cv90", "cv80", "cv70", "cv60", "cv50"); colnames(predr) = c("corr_RF", "MSE_RF", "MAPE_RF","corr_OLS", "MSE_OLS", "MAPE_OLS")
 predr[1,] = cv1_func(ntrn = round(28*0.9))
 predr[2,] = cv1_func(ntrn = round(28*0.8))
 predr[3,] = cv1_func(ntrn = round(28*0.7))
 predr[4,] = cv1_func(ntrn = round(28*0.6))
 predr[5,] = cv1_func(ntrn = round(28*0.5))
-predr
+round(predr,2)
+# temp = round(predr,2)
+# write.csv(temp, "./outputs/cv1_pred.csv", quote = F, row.names = F)
 ```
+
+
 
 ## CV2: Leave several cows out CV
 - 1 cow
 - 2 cows
 - 3 cows
-```{r}
-#leave one cow out
-ntst = 1
-ntrn = 12-ntst
-test.ix = combn(12, ntst)
-cow_id = unique(data.df$ID)
-predr = list()
-for(i in test.ix){
-            test.df = data.df %>% filter(ID == cow_id[i]) %>% droplevels()
-            train.df = data.df %>% filter(ID != cow_id[i]) %>% droplevels()
-  
-            formu = paste("BW~1+", paste(colnames(train.df)[6:10], collapse = "+"), sep = "")
-            fit1 <- lm(formu, data = train.df)
-            
-            pred1 <- predict(fit1, test.df)
-            corr = cor(pred1, test.df$BW, use="complete.obs")
-            mse = mean((pred1 - test.df$BW)^2, na.rm = T)
 
-            mape = NA
-            
-            predr1[[i]] = round(c(corr, mse, mape), 2)
-            names(predr1[[i]]) = c("corr", "MSE", "mape")
-      
-}
-do.call(rbind, predr1)
-colMeans(do.call(rbind, predr1))
-```
-
+### Build fuction for cv2.
 ```{r}
 lc_func <- function(ntst){
-ntrn = 12-ntst
-test.ix = combn(12, ntst)
-cow_id = unique(data.df$ID)
-predr2 = list()
-for(i in 1:ncol(test.ix)){
-  
-            test.df = data.df %>% filter(ID %in% cow_id[c(test.ix[,i])]) %>% droplevels()
-            train.df = data.df %>% filter(!(ID %in% cow_id[c(test.ix[,i])])) %>% droplevels()
+          ntrn = 12-ntst
+          test.ix = combn(12, ntst)
+          cow_id = unique(data.df$ID)
+          predr2 = list()
+          for(i in 1:ncol(test.ix)){
+            
+                      test.df = data.df %>% filter(ID %in% cow_id[c(test.ix[,i])]) %>% droplevels()
+                      train.df = data.df %>% filter(!(ID %in% cow_id[c(test.ix[,i])])) %>% droplevels()
+          
+                      ##RF#####################
+                      rf11 <- caret::train(BW~. , 
+                                           data=train.df[,c(2,6:10)], 
+                                           method="rf", 
+                                           trControl=train_control0,
+                                           tuneGrid = expand.grid(mtry=3))
+                            
+                      pred1 = predict(rf11, test.df[,c(2,6:10)])
+                      corr1 = cor(pred1, test.df$BW, use="complete.obs")
+                      mse1 = mean((pred1 - test.df$BW)^2, na.rm = T)
+                      mape1 = MLmetrics::MAPE(pred1, test.df$BW)*100
 
-            formu = paste("BW~1+", paste(colnames(train.df)[6:10], collapse = "+"), sep = "")
-            fit1 <- lm(formu, data = train.df)
+            
+            
+            
+                      ##OLS###################
+                      formu = paste("BW~1+", paste(colnames(train.df)[c(6,7,9,10)], collapse = "+"), sep = "")
+                      fit1 <- lm(formu, data = train.df)
+                      summary(fit1)
+                      pred2 <- predict(fit1, test.df)
+                      corr2 = cor(pred2, test.df$BW, use="complete.obs")
+                      mse2 = mean((pred2 - test.df$BW)^2, na.rm = T)
+          
+                      mape2 = MLmetrics::MAPE(pred2, test.df$BW)*100
+          
+                      predr2[[i]] = c(corr1, mse1, mape1, corr2, mse2, mape2)
+                      names(predr2[[i]]) = c("corr_RF", "MSE_RF", "MAPE_RF", "corr_OLS", "MSE_OLS", "MAPE_OLS")
+            }
+                return(predr2)
+          }
+```
 
-            pred1 <- predict(fit1, test.df)
-            corr = cor(pred1, test.df$BW, use="complete.obs")
-            mse = mean((pred1 - test.df$BW)^2, na.rm = T)
+```{r, eval = F}
+predr1 = lc_func(1)
+predr2 = lc_func(2)
+predr3 = lc_func(3)
+# save(predr1, predr2, predr3, file="./outputs/CV2_predr.RData")
+```
 
-            mape = NA
 
-            predr2[[i]] = round(c(corr, mse, mape), 2)
-            names(predr2[[i]]) = c("corr", "MSE", "mape")
-  }
-      return(predr2)
-}
+```{r}
+round(colMeans(do.call(rbind, predr1)),2)
+round(colMeans(do.call(rbind, predr2)),2)
+round(colMeans(do.call(rbind, predr3)),2)
 ```
 
 ```{r}
-predr1 = lc_func(1)
-round(colMeans(do.call(rbind, predr1)),2)
-
-predr2 = lc_func(2)
-round(colMeans(do.call(rbind, predr2)),2)
-
-predr3 = lc_func(3)
-round(colMeans(do.call(rbind, predr3)),2)
+r1 = do.call(rbind, predr1)
+r2 = do.call(rbind, predr2)
+r3 = do.call(rbind, predr3)
 ```
+
+
+```{r}
+rr1 = rbind.data.frame(cbind(r1[,1],"Leave-one-cow-out", "RF"), cbind(r2[,1],"Leave-two-cow-out", "RF"), cbind(r3[,1], "Leave-three-cow-out", "RF"),
+                       cbind(r1[,4],"Leave-one-cow-out", "OLS"), cbind(r2[,4],"Leave-two-cow-out", "OLS"), cbind(r3[,4], "Leave-three-cow-out", "OLS"))
+
+colnames(rr1) = c("Accuracy", "Method", "Model")
+
+rr1$Method = factor(rr1$Method, levels = c("Leave-one-cow-out",   "Leave-two-cow-out", "Leave-three-cow-out" ))
+rr1$Accuracy = as.numeric(rr1$Accuracy)
+
+
+ggplot(rr1, aes(x=Method, y=Accuracy, fill = Model)) + 
+  geom_boxplot() + 
+  # geom_jitter(shape=16, position=position_jitter(0.2, 0.3)) + 
+  theme_classic() +
+  scale_fill_brewer(palette="Set3")+
+  labs(x="Cross validation design", 
+       y = "Predictive correlation") + 
+  theme(text=element_text(size=16, hjust=0.5))
+# dev.print(pdf, "./outputs/cv2_pred1_RF_ols.pdf", height = 6, width = 10)
+  
+```
+
+
+```{r}
+rr3 = rbind.data.frame(cbind(r1[,3],"Leave-one-cow-out", "RF"), cbind(r2[,3],"Leave-two-cow-out", "RF"), cbind(r3[,3], "Leave-three-cow-out", "RF"),
+                       cbind(r1[,6],"Leave-one-cow-out", "OLS"), cbind(r2[,6],"Leave-two-cow-out", "OLS"), cbind(r3[,6], "Leave-three-cow-out", "OLS"))
+
+colnames(rr3) = c("MAPE", "Method", "Model")
+
+rr3$Method = factor(rr3$Method, levels = c("Leave-one-cow-out",   "Leave-two-cow-out", "Leave-three-cow-out" ))
+rr3$MAPE = as.numeric(rr3$MAPE)
+
+ggplot(rr3, aes(x=Method, y=MAPE, fill = Model)) + 
+  geom_boxplot() + 
+  # geom_jitter(shape=16, position=position_jitter(0.2)) + 
+  theme_classic() +
+  scale_fill_brewer(palette="Set3") + 
+  labs(x="Cross validation design", 
+       y = "Mean absolute percentage error") + 
+  theme(text=element_text(size=16, hjust=0.5))
+# dev.print(pdf, "./outputs/cv2_pred2_RF_ols.pdf", height = 6, width = 10)
+```
+
+
+
+
 
 
 
